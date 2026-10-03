@@ -1,0 +1,42 @@
+# Copy to .github/workflows/ai-gate.yml in the repo you want to protect.
+# Then make "AI quality gate" a required status check on the target branch (see README).
+name: AI quality gate
+
+on:
+  pull_request:
+    branches: [qa, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write # for the PR comment
+
+concurrency:
+  group: ai-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: AI quality gate
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the gate diffs against the merge base
+
+      - uses: MehdiSehlouli/ai-pr-gate@v0.1.0
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-gate-report
+          path: ai-gate-report/
+          if-no-files-found: ignore

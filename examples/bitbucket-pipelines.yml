@@ -1,0 +1,28 @@
+# Copy to bitbucket-pipelines.yml (or merge the pull-requests section into your existing one).
+# Repository variables to add (Repository settings > Pipelines > Repository variables, all "Secured"):
+#   ANTHROPIC_API_KEY       required
+#   BITBUCKET_ACCESS_TOKEN  repository access token with "Pull requests: Write", for the PR comment
+#   SLACK_WEBHOOK_URL / TEAMS_WEBHOOK_URL / SMTP_*   optional alerts
+# Then add a merge check on the target branch requiring a successful build (see README).
+
+image: python:3.12-slim
+
+definitions:
+  steps:
+    - step: &ai-gate
+        name: AI quality gate
+        max-time: 15
+        script:
+          - apt-get update -qq && apt-get install -y -qq git > /dev/null
+          # Pipelines clones shallow and only the source branch; fetch the target so the merge base exists.
+          - git fetch --unshallow origin || true
+          - git fetch origin "+refs/heads/${BITBUCKET_PR_DESTINATION_BRANCH}:refs/remotes/origin/${BITBUCKET_PR_DESTINATION_BRANCH}"
+          - pip install --quiet "git+https://github.com/MehdiSehlouli/ai-pr-gate@v0.1.0"
+          - ai-pr-gate --policy .ai-gate.yml
+        artifacts:
+          - ai-gate-report/**
+
+pipelines:
+  pull-requests:
+    "**":
+      - step: *ai-gate

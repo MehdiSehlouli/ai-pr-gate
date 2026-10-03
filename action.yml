@@ -1,0 +1,42 @@
+name: AI PR Gate
+description: Claude-powered security and code-quality audit that passes or fails a pull request.
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key (pass a secret)
+    required: true
+  policy:
+    description: Path to the policy file in the calling repo
+    default: .ai-gate.yml
+  github-token:
+    description: Token used to post the PR comment
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: PASS or FAIL
+    value: ${{ steps.gate.outputs.verdict }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - shell: bash
+      run: pip install --quiet "${{ github.action_path }}"
+    - id: gate
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        AI_GATE_POLICY: ${{ inputs.policy }}
+      run: |
+        set +e
+        ai-pr-gate --policy "$AI_GATE_POLICY"
+        code=$?
+        if [ $code -eq 0 ]; then echo "verdict=PASS" >> "$GITHUB_OUTPUT"; else echo "verdict=FAIL" >> "$GITHUB_OUTPUT"; fi
+        exit $code

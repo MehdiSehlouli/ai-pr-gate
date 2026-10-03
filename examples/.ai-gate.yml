@@ -1,0 +1,40 @@
+# Policy for ai-pr-gate. Every key is optional; these are the defaults unless noted.
+
+model: claude-sonnet-5-5
+max_tokens: 16000
+
+# Block the PR if any finding is at or above this severity.
+# One of: critical, high, medium, low, info, none
+fail_on: high
+
+# Optional caps per severity. Example: fail when there are more than 5 medium findings.
+max_findings:
+  medium: 5
+
+# If the audit itself cannot run (API down, missing key): "fail" blocks the PR, "pass" lets it through.
+on_error: fail
+
+diff:
+  max_chars: 120000
+  include: ["**"]
+  exclude:
+    - "**/*.lock"
+    - "**/package-lock.json"
+    - "**/migrations/**"
+    - "**/vendor/**"
+    - "**/dist/**"
+    - "docs/**"
+
+# Project rules added to the review prompt.
+extra_instructions: |
+  - All database access must go through the ORM; raw SQL needs bound parameters.
+  - Never log request bodies, tokens or passwords.
+
+pr_comment: true
+
+notify:
+  on: fail # fail | always | never
+  slack_webhook_env: SLACK_WEBHOOK_URL
+  teams_webhook_env: TEAMS_WEBHOOK_URL
+  email:
+    to: [] # e.g. ["qa-lead@example.com"]; also set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM
