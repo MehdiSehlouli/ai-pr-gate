@@ -18,7 +18,7 @@ definitions:
           # Pipelines clones shallow and only the source branch; fetch the target so the merge base exists.
           - git fetch --unshallow origin || true
           - git fetch origin "+refs/heads/${BITBUCKET_PR_DESTINATION_BRANCH}:refs/remotes/origin/${BITBUCKET_PR_DESTINATION_BRANCH}"
-          - pip install --quiet "git+https://github.com/MehdiSehlouli/ai-pr-gate@v0.2.1"
+          - pip install --quiet "git+https://github.com/MehdiSehlouli/ai-pr-gate@v0.2.2"
           - ai-pr-gate --policy .ai-gate.yml
         artifacts:
           - ai-gate-report/**

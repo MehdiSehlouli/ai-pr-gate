@@ -22,11 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # the gate diffs against the merge base
 
-      - uses: MehdiSehlouli/ai-pr-gate@v0.2.1
+      - name: AI quality gate
+        uses: MehdiSehlouli/ai-pr-gate@v0.2.2
         with:
           groq-api-key: ${{ secrets.GROQ_API_KEY }}
           # anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}  # only with provider: anthropic in .ai-gate.yml
@@ -36,7 +37,7 @@ jobs:
 
       - name: Upload audit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ai-gate-report
           path: ai-gate-report/

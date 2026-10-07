@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import ci, llm, notify, policy as pol, report
+from . import annotations, ci, llm, notify, policy as pol, report
 from .config import API_KEY_ENV, load_policy
 from .diff import filter_diff, git_diff
 
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
             result = llm.review_diff(diff, policy, api_key)
     except Exception as e:  # noqa: BLE001
         msg = str(e)
-        print(f"::error::AI gate error: {msg}" if context["platform"] == "github" else f"AI gate error: {msg}", file=sys.stderr)
+        print(annotations.command("error", f"AI gate error: {msg}", title=annotations.TITLE) if context["platform"] == "github" else f"AI gate error: {msg}", file=sys.stderr)
         md = report.render_error(msg, policy["on_error"])
         (out / "report.md").write_text(md)
         _publish(md, context, args, policy)
@@ -70,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     (out / "report.md").write_text(md)
     (out / "findings.json").write_text(json.dumps({**result, **verdict, "reviewed": reviewed, "skipped": skipped}, indent=2))
     print(md)
+    if context["platform"] == "github":
+        print(annotations.verdict_line(verdict, result["findings"]))
+        for line in annotations.finding_lines(result["findings"], policy):
+            print(line)
 
     _publish(md, context, args, policy)
     if not args.no_notify:

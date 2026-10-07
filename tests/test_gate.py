@@ -420,3 +420,54 @@ def test_cli_groq_end_to_end(local_env, monkeypatch):
 def test_cli_missing_key_can_fail_open(local_env):
     (local_env / ".ai-gate.yml").write_text("on_error: pass\n")
     assert main(["--diff-file", "pr.diff", "--no-notify"]) == 0
+
+
+# --- GitHub annotations -----------------------------------------------------
+
+from gate import annotations
+
+
+def test_annotation_escaping():
+    assert annotations.escape_data("50% done\r\nnext") == "50%25 done%0D%0Anext"
+    assert annotations.escape_property("a:b,c%\n") == "a%3Ab%2Cc%25%0A"
+    line = annotations.command("error", "x: y, z\n2", file="a,b.py", line="3", title="high: t")
+    assert line == "::error file=a%2Cb.py,line=3,title=high%3A t::x: y, z%0A2"
+
+
+def test_finding_annotations_split_by_fail_on():
+    lines = annotations.finding_lines([SQLI, {**NIT, "line": "bad"}], policy(fail_on="high"))
+    assert lines[0] == "::error file=app/routes.py,line=13,title=critical%3A SQL injection in /search::User input is formatted into raw SQL."
+    assert lines[1].startswith("::warning file=app/routes.py,title=low%3A Missing docstring::")
+    assert all(l.startswith("::warning") for l in annotations.finding_lines([SQLI], policy(fail_on="none")))
+    nofile = annotations.finding_lines([{**NIT, "file": None}], policy())[0]
+    assert "file=" not in nofile and "line=" not in nofile
+
+
+def test_cli_github_fail_annotations(local_env, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    (local_env / "f.json").write_text(json.dumps({"summary": "s", "findings": [NIT, SQLI], "model": "m"}))
+    assert main(["--diff-file", "pr.diff", "--findings-file", "f.json", "--no-notify", "--no-comment"]) == 1
+    out = [l for l in capsys.readouterr().out.splitlines() if l.startswith("::")]
+    assert out[0] == "::error title=AI quality gate::FAIL - 1 finding(s) at or above 'high'"
+    assert out[1].startswith("::error file=app/routes.py,line=13,title=critical%3A")
+    assert out[2].startswith("::warning file=app/routes.py,line=11,title=low%3A")
+
+
+def test_cli_github_pass_notice(local_env, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    (local_env / "f.json").write_text(json.dumps({"summary": "s", "findings": [NIT], "model": "m"}))
+    assert main(["--diff-file", "pr.diff", "--findings-file", "f.json", "--no-notify", "--no-comment"]) == 0
+    out = [l for l in capsys.readouterr().out.splitlines() if l.startswith("::")]
+    assert out[0] == "::notice title=AI quality gate::PASS - 1 finding(s), none blocking"
+
+
+def test_cli_github_error_annotation(local_env, monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert main(["--diff-file", "pr.diff", "--no-notify", "--no-comment"]) == 2
+    assert "::error title=AI quality gate::AI gate error: GROQ_API_KEY is not set" in capsys.readouterr().err
+
+
+def test_cli_local_has_no_annotations(local_env, capsys):
+    (local_env / "f.json").write_text(json.dumps({"summary": "s", "findings": [SQLI], "model": "m"}))
+    main(["--diff-file", "pr.diff", "--findings-file", "f.json", "--no-notify"])
+    assert not any(l.startswith("::") for l in capsys.readouterr().out.splitlines())

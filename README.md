@@ -6,7 +6,7 @@ What it does on every PR:
 1. Diffs the PR branch against the merge base with the target branch, skipping lockfiles, vendored code and anything the policy excludes.
 2. Sends the diff to the LLM and gets the findings back as schema-checked JSON (severity, category, file, line, fix, CWE). On Groq (default model `qwen/qwen3.8-27b`) this uses strict `json_schema` structured outputs; with `provider: anthropic` it uses a strict `report_findings` tool call.
 3. Applies the policy (`fail_on` threshold and per-severity caps) and exits `0` PASS, `1` FAIL, or `2` if the audit itself failed (fail-closed by default).
-4. Posts or updates a single PR comment, writes `ai-gate-report/report.md` and `findings.json`, and on failure alerts Slack, Teams or email.
+4. Posts or updates a single PR comment, writes `ai-gate-report/report.md` and `findings.json`, and on failure alerts Slack, Teams or email. On GitHub it also adds the verdict and each finding as annotations on the run summary and the PR's Files changed tab.
 
 ## Setup: GitHub
 
