@@ -1,13 +1,18 @@
 name: AI PR Gate
-description: Claude-powered security and code-quality audit that passes or fails a pull request.
+description: LLM-powered security and code-quality audit (Groq by default, Anthropic optional) that passes or fails a pull request.
 branding:
   icon: shield
   color: purple
 
 inputs:
+  groq-api-key:
+    description: Groq API key (pass a secret). Needed for the default provider, groq.
+    required: false
+    default: ""
   anthropic-api-key:
-    description: Anthropic API key (pass a secret)
-    required: true
+    description: Anthropic API key (pass a secret). Only needed when the policy sets provider anthropic.
+    required: false
+    default: ""
   policy:
     description: Path to the policy file in the calling repo
     default: .ai-gate.yml
@@ -31,6 +36,7 @@ runs:
     - id: gate
       shell: bash
       env:
+        GROQ_API_KEY: ${{ inputs.groq-api-key }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         AI_GATE_POLICY: ${{ inputs.policy }}

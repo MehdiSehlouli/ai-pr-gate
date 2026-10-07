@@ -4,7 +4,7 @@ import urllib.error
 
 import pytest
 
-from gate import ci, claude, notify, report
+from gate import ci, claude, groq, llm, notify, report
 from gate.__main__ import main
 from gate.config import DEFAULTS, load_policy
 from gate.diff import filter_diff
@@ -76,6 +76,31 @@ def test_policy_file_merges_with_defaults(tmp_path):
     assert p["diff"]["exclude"] == DEFAULTS["diff"]["exclude"]
 
 
+def test_policy_defaults_to_groq_qwen():
+    p = load_policy(None)
+    assert p["provider"] == "groq" and p["model"] == "qwen/qwen3.8-27b"
+
+
+def test_policy_anthropic_gets_claude_default(tmp_path):
+    f = tmp_path / "p.yml"
+    f.write_text("provider: anthropic\n")
+    assert load_policy(str(f))["model"] == "claude-sonnet-5-5"
+
+
+def test_policy_rejects_claude_model_on_groq(tmp_path):
+    f = tmp_path / "p.yml"
+    f.write_text("model: claude-sonnet-5-5\n")
+    with pytest.raises(ValueError, match="provider: anthropic"):
+        load_policy(str(f))
+
+
+def test_policy_rejects_unknown_provider(tmp_path):
+    f = tmp_path / "p.yml"
+    f.write_text("provider: openai\n")
+    with pytest.raises(ValueError, match="provider"):
+        load_policy(str(f))
+
+
 def test_policy_rejects_bad_severity(tmp_path):
     f = tmp_path / "p.yml"
     f.write_text("fail_on: severe\n")
@@ -97,7 +122,22 @@ def test_filter_skips_whole_files_over_budget():
     assert reviewed == [] and skipped == ["app/routes.py", "package-lock.json"]
 
 
-# --- claude client ----------------------------------------------------------
+# --- groq client (default) ----------------------------------------------------
+
+def anthropic_policy(**overrides):
+    return policy(provider="anthropic", model="claude-sonnet-5-5", **overrides)
+
+
+def groq_response(findings, finish_reason="stop", content=None):
+    return {
+        "model": "qwen/qwen3.8-27b",
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        "choices": [{
+            "index": 0,
+            "finish_reason": finish_reason,
+            "message": {"role": "assistant", "content": content if content is not None else json.dumps({"summary": "s", "findings": findings})},
+        }],
+    }
 
 class FakeResp(io.BytesIO):
     def __enter__(self):
@@ -116,24 +156,116 @@ def tool_response(findings):
     }
 
 
-def test_review_diff_parses_tool_call(monkeypatch):
+def test_groq_review_parses_json_schema_output(monkeypatch):
     sent = {}
 
     def fake_urlopen(req, timeout):
+        sent["url"] = req.full_url
+        sent["headers"] = dict(req.headers)
+        sent["body"] = json.loads(req.data)
+        return FakeResp(json.dumps(groq_response([SQLI])).encode())
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    out = llm.review_diff(DIFF, policy(extra_instructions="No raw SQL."), "gsk-test")
+    assert out["findings"] == [SQLI] and out["model"] == "qwen/qwen3.8-27b"
+    assert sent["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert sent["headers"]["Authorization"] == "Bearer gsk-test"
+    body = sent["body"]
+    assert body["model"] == "qwen/qwen3.8-27b"
+    assert body["max_completion_tokens"] == 16000
+    assert body["response_format"]["type"] == "json_schema"
+    assert body["response_format"]["json_schema"]["strict"] is True
+    assert body["response_format"]["json_schema"]["schema"]["required"] == ["summary", "findings"]
+    assert body["reasoning_format"] == "hidden"
+    assert body["messages"][0]["role"] == "system"
+    assert "No raw SQL." in body["messages"][1]["content"]
+
+
+def test_groq_non_strict_model_uses_best_effort():
+    body = groq.build_payload(DIFF, policy(model="llama-3.3-70b-versatile"))
+    assert body["response_format"]["json_schema"]["strict"] is False
+    assert "reasoning_format" not in body
+
+
+def test_groq_retries_on_rate_limit_and_flex_capacity(monkeypatch):
+    codes = [429, 498]
+
+    def fake_urlopen(req, timeout):
+        if codes:
+            raise urllib.error.HTTPError(req.full_url, codes.pop(0), "busy", {}, io.BytesIO(b""))
+        return FakeResp(json.dumps(groq_response([])).encode())
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    assert groq.review_diff(DIFF, policy(), "k")["findings"] == []
+    assert codes == []
+
+
+def test_groq_does_not_retry_auth_error(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", {}, io.BytesIO(b'{"error":{"message":"Invalid API Key"}}'))
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(llm.GateError, match="Groq API returned 401"):
+        groq.review_diff(DIFF, policy(), "bad")
+    assert calls["n"] == 1
+
+
+def test_groq_unreachable_after_retries(monkeypatch):
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 503, "unavailable", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    with pytest.raises(llm.GateError, match="unreachable after 3 attempts"):
+        groq.review_diff(DIFF, policy(), "k")
+
+
+def test_groq_truncated_response_is_an_error(monkeypatch):
+    body = groq_response([], finish_reason="length", content='{"summary": "s", "find')
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(body).encode()))
+    with pytest.raises(llm.GateError, match="cut off"):
+        groq.review_diff(DIFF, policy(), "k")
+
+
+def test_groq_asks_again_on_invalid_json(monkeypatch):
+    replies = [groq_response([], content="Looks fine."), groq_response([SQLI])]
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(replies.pop(0)).encode()))
+    assert groq.review_diff(DIFF, policy(), "k")["findings"] == [SQLI]
+
+
+def test_groq_gives_up_after_two_invalid_answers(monkeypatch):
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(groq_response([], content="")).encode()))
+    with pytest.raises(llm.GateError, match="valid report_findings JSON"):
+        groq.review_diff(DIFF, policy(), "k")
+
+
+# --- anthropic client (provider: anthropic) ---------------------------------------
+
+
+def test_anthropic_parses_tool_call(monkeypatch):
+    sent = {}
+
+    def fake_urlopen(req, timeout):
+        sent["url"] = req.full_url
         sent["headers"] = dict(req.headers)
         sent["body"] = json.loads(req.data)
         return FakeResp(json.dumps(tool_response([SQLI])).encode())
 
-    monkeypatch.setattr(claude.urllib.request, "urlopen", fake_urlopen)
-    out = claude.review_diff(DIFF, policy(extra_instructions="No raw SQL."), "sk-test")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    out = llm.review_diff(DIFF, anthropic_policy(extra_instructions="No raw SQL."), "sk-test")
     assert out["findings"] == [SQLI]
     assert sent["body"]["tool_choice"] == {"type": "auto"}
     assert sent["body"]["tools"][0]["strict"] is True
     assert "No raw SQL." in sent["body"]["messages"][0]["content"]
     assert sent["headers"]["X-api-key"] == "sk-test"
+    assert sent["url"] == claude.API_URL and sent["body"]["model"] == "claude-sonnet-5-5"
 
 
-def test_review_diff_retries_on_overload(monkeypatch):
+def test_anthropic_retries_on_overload(monkeypatch):
     calls = {"n": 0}
 
     def fake_urlopen(req, timeout):
@@ -142,35 +274,35 @@ def test_review_diff_retries_on_overload(monkeypatch):
             raise urllib.error.HTTPError(req.full_url, 529, "overloaded", {}, io.BytesIO(b""))
         return FakeResp(json.dumps(tool_response([])).encode())
 
-    monkeypatch.setattr(claude.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(claude.time, "sleep", lambda s: None)
-    assert claude.review_diff(DIFF, policy(), "k")["findings"] == []
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    assert claude.review_diff(DIFF, anthropic_policy(), "k")["findings"] == []
     assert calls["n"] == 2
 
 
-def test_review_diff_does_not_retry_auth_error(monkeypatch):
+def test_anthropic_does_not_retry_auth_error(monkeypatch):
     def fake_urlopen(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", {}, io.BytesIO(b'{"error":"invalid x-api-key"}'))
 
-    monkeypatch.setattr(claude.urllib.request, "urlopen", fake_urlopen)
-    with pytest.raises(claude.GateError, match="401"):
-        claude.review_diff(DIFF, policy(), "bad")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(llm.GateError, match="401"):
+        claude.review_diff(DIFF, anthropic_policy(), "bad")
 
 
-def test_review_diff_asks_again_when_tool_is_not_called(monkeypatch):
+def test_anthropic_asks_again_when_tool_is_not_called(monkeypatch):
     replies = [
         {"model": "m", "stop_reason": "end_turn", "content": [{"type": "text", "text": "Looks fine."}]},
         tool_response([SQLI]),
     ]
-    monkeypatch.setattr(claude.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(replies.pop(0)).encode()))
-    assert claude.review_diff(DIFF, policy(), "k")["findings"] == [SQLI]
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(replies.pop(0)).encode()))
+    assert claude.review_diff(DIFF, anthropic_policy(), "k")["findings"] == [SQLI]
 
 
-def test_truncated_response_is_an_error(monkeypatch):
+def test_anthropic_truncated_response_is_an_error(monkeypatch):
     body = {**tool_response([]), "stop_reason": "max_tokens"}
-    monkeypatch.setattr(claude.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(body).encode()))
-    with pytest.raises(claude.GateError, match="max_tokens"):
-        claude.review_diff(DIFF, policy(), "k")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(body).encode()))
+    with pytest.raises(llm.GateError, match="max_tokens"):
+        claude.review_diff(DIFF, anthropic_policy(), "k")
 
 
 # --- report / ci / notify ------------------------------------------------------
@@ -218,7 +350,7 @@ def test_detect_bitbucket(monkeypatch):
 
 @pytest.fixture
 def local_env(monkeypatch, tmp_path):
-    for k in ("GITHUB_ACTIONS", "BITBUCKET_BUILD_NUMBER", "GITHUB_STEP_SUMMARY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "TEAMS_WEBHOOK_URL"):
+    for k in ("GITHUB_ACTIONS", "BITBUCKET_BUILD_NUMBER", "GITHUB_STEP_SUMMARY", "GROQ_API_KEY", "ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL", "TEAMS_WEBHOOK_URL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "pr.diff").write_text(DIFF)
@@ -240,7 +372,23 @@ def test_cli_passes_clean_change(local_env):
 
 def test_cli_missing_key_fails_closed(local_env):
     assert main(["--diff-file", "pr.diff", "--no-notify"]) == 2
-    assert "ERROR" in (local_env / "ai-gate-report" / "report.md").read_text()
+    md = (local_env / "ai-gate-report" / "report.md").read_text()
+    assert "ERROR" in md and "GROQ_API_KEY is not set" in md
+
+
+def test_cli_anthropic_provider_needs_anthropic_key(local_env, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-unused")
+    (local_env / ".ai-gate.yml").write_text("provider: anthropic\n")
+    assert main(["--diff-file", "pr.diff", "--no-notify"]) == 2
+    assert "ANTHROPIC_API_KEY is not set" in (local_env / "ai-gate-report" / "report.md").read_text()
+
+
+def test_cli_groq_end_to_end(local_env, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout: FakeResp(json.dumps(groq_response([SQLI])).encode()))
+    assert main(["--diff-file", "pr.diff", "--no-notify"]) == 1
+    md = (local_env / "ai-gate-report" / "report.md").read_text()
+    assert "FAIL" in md and "model `qwen/qwen3.8-27b`" in md
 
 
 def test_cli_missing_key_can_fail_open(local_env):

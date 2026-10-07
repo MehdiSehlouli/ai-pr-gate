@@ -1,6 +1,10 @@
 # Policy for ai-pr-gate. Every key is optional; these are the defaults unless noted.
 
-model: claude-sonnet-5-5
+# LLM provider: groq (default, needs GROQ_API_KEY) or anthropic (needs ANTHROPIC_API_KEY).
+provider: groq
+# Defaults: qwen/qwen3.8-27b for groq, claude-sonnet-5-5 for anthropic.
+model: qwen/qwen3.8-27b
+# qwen/qwen3.8-27b allows at most 16384 completion tokens.
 max_tokens: 16000
 
 # Block the PR if any finding is at or above this severity.

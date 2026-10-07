@@ -11,13 +11,13 @@ import os
 import sys
 from pathlib import Path
 
-from . import ci, claude, notify, policy as pol, report
-from .config import load_policy
+from . import ci, llm, notify, policy as pol, report
+from .config import API_KEY_ENV, load_policy
 from .diff import filter_diff, git_diff
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="ai-pr-gate", description="Claude-powered security and quality gate for pull requests.")
+    p = argparse.ArgumentParser(prog="ai-pr-gate", description="LLM-powered security and quality gate for pull requests.")
     p.add_argument("--base", help="Base ref to diff against (default: the PR target branch from CI, else origin/main)")
     p.add_argument("--head", default="HEAD")
     p.add_argument("--policy", default=".ai-gate.yml", help="Policy file (default: .ai-gate.yml)")
@@ -50,10 +50,11 @@ def main(argv: list[str] | None = None) -> int:
         elif not diff.strip():
             result = {"summary": "No reviewable changes in this PR.", "findings": [], "model": "none"}
         else:
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            key_env = API_KEY_ENV[policy["provider"]]
+            api_key = os.environ.get(key_env)
             if not api_key:
-                raise claude.GateError("ANTHROPIC_API_KEY is not set. Add it as a CI secret.")
-            result = claude.review_diff(diff, policy, api_key)
+                raise llm.GateError(f"{key_env} is not set (provider: {policy['provider']}). Add it as a CI secret.")
+            result = llm.review_diff(diff, policy, api_key)
     except Exception as e:  # noqa: BLE001
         msg = str(e)
         print(f"::error::AI gate error: {msg}" if context["platform"] == "github" else f"AI gate error: {msg}", file=sys.stderr)

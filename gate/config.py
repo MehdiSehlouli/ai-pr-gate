@@ -9,8 +9,17 @@ import yaml
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
 
+PROVIDERS = ("groq", "anthropic")
+# Used when the policy does not set "model".
+DEFAULT_MODELS = {"groq": "qwen/qwen3.8-27b", "anthropic": "claude-sonnet-5-5"}
+API_KEY_ENV = {"groq": "GROQ_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+
 DEFAULTS = {
-    "model": "claude-sonnet-5-5",
+    # "groq" (default) or "anthropic".
+    "provider": "groq",
+    # Empty means the provider's default model (DEFAULT_MODELS).
+    "model": "",
+    # Output budget. qwen/qwen3.8-27b on Groq allows at most 16,384 completion tokens.
     "max_tokens": 16000,
     # Fail the PR if any finding is at or above this severity.
     "fail_on": "high",
@@ -79,4 +88,9 @@ def load_policy(path: str | None) -> dict:
             raise ValueError(f"max_findings has unknown severity {sev!r}")
     if policy["on_error"] not in ("fail", "pass"):
         raise ValueError("on_error must be 'fail' or 'pass'")
+    if policy["provider"] not in PROVIDERS:
+        raise ValueError(f"provider must be one of {list(PROVIDERS)}, got {policy['provider']!r}")
+    policy["model"] = policy["model"] or DEFAULT_MODELS[policy["provider"]]
+    if policy["provider"] != "anthropic" and str(policy["model"]).startswith("claude-"):
+        raise ValueError(f"model {policy['model']!r} is an Anthropic model; set provider: anthropic or pick a {policy['provider']} model")
     return policy
