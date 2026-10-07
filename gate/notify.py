@@ -8,9 +8,11 @@ import smtplib
 import urllib.request
 from email.message import EmailMessage
 
+from .http_client import build_request
+
 
 def _post_json(url: str, payload: dict) -> None:
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"content-type": "application/json"})
+    req = build_request(url, data=json.dumps(payload).encode(), headers={"content-type": "application/json"})
     urllib.request.urlopen(req, timeout=20).read()
 
 

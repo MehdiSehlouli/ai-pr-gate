@@ -6,6 +6,7 @@ import json
 import os
 import urllib.request
 
+from .http_client import build_request
 from .report import COMMENT_MARKER
 
 HEADING = "## AI quality gate:"
@@ -48,7 +49,7 @@ def detect() -> dict:
 
 def _request(method: str, url: str, headers: dict, payload: dict | None = None) -> dict | list:
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={**headers, "content-type": "application/json"})
+    req = build_request(url, data=data, method=method, headers={**headers, "content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read()
         return json.loads(raw) if raw else {}

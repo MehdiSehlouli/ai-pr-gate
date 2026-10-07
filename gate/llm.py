@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 from .config import PROVIDERS, SEVERITIES
+from .http_client import build_request
 
 SYSTEM_PROMPT = """You are a senior application-security and code-quality reviewer acting as a merge gate.
 You review ONLY the lines added or changed in the diff. Context lines are there to help you understand them.
@@ -70,10 +71,10 @@ def user_message(diff: str, policy: dict, closing: str) -> str:
 
 
 def post_json(url: str, headers: dict, payload: dict, timeout: int) -> dict:
-    req = urllib.request.Request(
+    req = build_request(
         url,
         data=json.dumps(payload).encode(),
-        headers={**headers, "content-type": "application/json"},
+        headers={**headers, "content-type": "application/json", "accept": "application/json"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -90,6 +91,8 @@ def call_with_retries(label: str, url: str, headers: dict, payload: dict, retrie
             last_err = e
             if e.code not in (429, 498) and e.code < 500:
                 detail = e.read().decode(errors="replace")[:500]
+                if "error code: 1010" in detail:
+                    detail += " (Cloudflare blocked the request signature, usually the User-Agent)"
                 raise GateError(f"{label} API returned {e.code}: {detail}") from e
         except (urllib.error.URLError, TimeoutError) as e:
             last_err = e

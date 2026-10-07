@@ -4,6 +4,7 @@ import urllib.error
 
 import pytest
 
+import gate
 from gate import ci, claude, groq, llm, notify, report
 from gate.__main__ import main
 from gate.config import DEFAULTS, load_policy
@@ -170,6 +171,9 @@ def test_groq_review_parses_json_schema_output(monkeypatch):
     assert out["findings"] == [SQLI] and out["model"] == "qwen/qwen3.8-27b"
     assert sent["url"] == "https://api.groq.com/openai/v1/chat/completions"
     assert sent["headers"]["Authorization"] == "Bearer gsk-test"
+    # urllib capitalizes header keys; an explicit UA avoids Cloudflare 1010 on Groq.
+    assert sent["headers"]["User-agent"] == f"ai-pr-gate/{gate.__version__}"
+    assert sent["headers"]["Accept"] == "application/json"
     body = sent["body"]
     assert body["model"] == "qwen/qwen3.8-27b"
     assert body["max_completion_tokens"] == 16000
@@ -212,6 +216,28 @@ def test_groq_does_not_retry_auth_error(monkeypatch):
     with pytest.raises(llm.GateError, match="Groq API returned 401"):
         groq.review_diff(DIFF, policy(), "bad")
     assert calls["n"] == 1
+
+
+def test_groq_cloudflare_1010_is_explained(monkeypatch):
+    def fake_urlopen(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, 403, "forbidden", {}, io.BytesIO(b"error code: 1010"))
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(llm.GateError, match="Groq API returned 403: error code: 1010 .*Cloudflare"):
+        groq.review_diff(DIFF, policy(), "k")
+
+
+def test_pr_comment_and_webhook_send_user_agent(monkeypatch):
+    seen = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.get_header("User-agent"))
+        return FakeResp(b"[]")
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    ci._request("GET", "https://api.github.com/x", {"authorization": "Bearer t"})
+    notify._post_json("https://hooks.slack.com/x", {"text": "hi"})
+    assert seen == [f"ai-pr-gate/{gate.__version__}"] * 2
 
 
 def test_groq_unreachable_after_retries(monkeypatch):
